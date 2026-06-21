@@ -126,7 +126,7 @@ with st.sidebar:
     anio = st.number_input(
         "Año",
         min_value=anio_min,
-        max_value=anio_min + 10,
+        max_value=anio_min + 20,
         value=anio_default,
         step=1,
         help=(
