@@ -1,0 +1,21 @@
+# Entornos / cache
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+
+# CSVs grandes de entrenamiento (no son necesarios para correr la app).
+# Mantenemos solo delitos_2023.csv que se usa para el mapeo barrio→comuna.
+delitos_2016.csv
+delitos_2017.csv
+delitos_2018.csv
+delitos_2019.csv
+delitos_2020.csv
+delitos_2021.csv
+delitos_2022.csv
+delitos_2024.csv
+delitos_2025.csv
+
+# PDFs / docs grandes
+*.pdf
