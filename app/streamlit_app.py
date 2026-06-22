@@ -9,59 +9,14 @@ import streamlit as st
 from streamlit_folium import st_folium
 import altair as alt
 
+from utils import normalize, build_payload
+from api import api_get, api_post
+from data import DIAS, MESES, TURNOS, cargar_barrio_comuna, cargar_geojson, detectar_clave
+
 st.set_page_config(page_title="Seguridad CABA", layout="wide")
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
-CSV_PATH = ROOT / "delitos_2023.csv"
-GEOJSON_URL = (
-    "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/"
-    "ministerio-de-educacion/barrios/barrios.geojson"
-)
-API_URL = "https://prediccion-crimen-1.onrender.com"
-
-DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
-MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
-]
-TURNOS = ["Madrugada", "Mañana", "Tarde", "Noche"]
-
-
-def _normalize(s: str) -> str:
-    if s is None:
-        return ""
-    s = unicodedata.normalize("NFKD", str(s))
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return s.strip().lower()
-
-# ─────────────────────────── DATA ───────────────────────────
-
-@st.cache_data
-def cargar_barrio_comuna() -> dict[str, str]:
-    df = pd.read_csv(CSV_PATH, dtype={"barrio": str, "comuna": str})
-    df = df[df["barrio"].notna() & df["comuna"].notna()].copy()
-    df["barrio"] = df["barrio"].str.strip().str.title()
-    df["comuna"] = df["comuna"].str.strip()
-    counts = df.groupby(["barrio", "comuna"]).size().reset_index(name="n")
-    counts = counts.sort_values(["barrio", "n"], ascending=[True, False])
-    counts = counts.drop_duplicates("barrio", keep="first")
-    return dict(zip(counts["barrio"], counts["comuna"]))
-
-
-@st.cache_data(ttl=24 * 3600)
-def cargar_geojson() -> dict:
-    r = requests.get(GEOJSON_URL, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-
-def detectar_clave(geojson: dict, candidatos: tuple[str, ...]) -> str | None:
-    props = geojson["features"][0]["properties"]
-    for c in candidatos:
-        if c in props:
-            return c
-    return None
 
 # ─────────────────────────── API CALLS ───────────────────────────
 
@@ -77,17 +32,6 @@ def feriados_anio(anio: int) -> set[tuple[int, int]]:
         return out
     except Exception:
         return set()
-    
-def api_get(path: str):
-    r = requests.get(f"{API_URL}{path}", timeout=10)
-    r.raise_for_status()
-    return r.json()
-
-
-def api_post(path: str, payload: dict):
-    r = requests.post(f"{API_URL}{path}", json=payload, timeout=10)
-    r.raise_for_status()
-    return r.json()
 
 # ─────────────────────────── LOAD STATIC ───────────────────────────
 
@@ -96,10 +40,10 @@ geojson = cargar_geojson()
 clave_barrio_geo = detectar_clave(geojson, ("BARRIO", "barrio", "NOMBRE", "nombre", "Nombre"))
 
 barrios_geojson = [f["properties"][clave_barrio_geo] for f in geojson["features"]]
-train_keys = {_normalize(b): b for b in barrio_comuna}
+train_keys = {normalize(b): b for b in barrio_comuna}
 barrio_geo_to_train: dict[str, str] = {}
 for b in barrios_geojson:
-    k = _normalize(b)
+    k = normalize(b)
     if k in train_keys:
         barrio_geo_to_train[b] = train_keys[k]
 
@@ -169,25 +113,12 @@ with st.sidebar:
     )
 es_fin_de_semana = dia_semana >= 5
 
-# ─────────────────────────── BUILD PAYLOAD ───────────────────────────
-def build_payload(barrio, comuna, turno_):
-    return {
-        "barrio": barrio,
-        "comuna": comuna,
-        "dia_semana": int(dia_semana),
-        "mes_num": int(mes_num),
-        "turno": turno_,
-        "es_fin_de_semana": bool(es_fin_de_semana),
-        "es_feriado": bool(es_feriado),
-        "anio": int(anio),
-    }
-
 # ─────────────────────────── Predicción por barrio ───────────────────────────
 primer_b_geo = list(barrio_geo_to_train.keys())[0]
 primer_b_train = barrio_geo_to_train[primer_b_geo]
 primer_comuna = barrio_comuna[primer_b_train]
 
-barrio_base_payload = build_payload(primer_b_train, primer_comuna, turno)
+barrio_base_payload = build_payload(primer_b_train, primer_comuna, turno, dia_semana, mes_num, anio, es_fin_de_semana, es_feriado)
 barrios_lista_payload = []
 barrios_validos_geo = []
 
@@ -315,7 +246,7 @@ factor_focus = api_post("/factor-anio", {
     "anio": int(anio)
 })
 
-payload_turno_focus = build_payload(b_train, comuna_focus, turno)
+payload_turno_focus = build_payload(b_train, comuna_focus, turno, dia_semana, mes_num, anio, es_fin_de_semana, es_feriado)
 turnos_response = api_post("/predict/turnos", payload_turno_focus)
 df_turno = pd.DataFrame(turnos_response)
 
@@ -352,7 +283,7 @@ if modelo_es_hibrido:
     st.subheader(f"Evolución temporal estimada — {barrio_focus}")
     anios_grafico = list(range(min(anios_disponibles), int(anio) + 6))
 
-    payload_evolucion = build_payload(b_train, comuna_focus, turno)
+    payload_evolucion = build_payload(b_train, comuna_focus, turno, dia_semana, mes_num, anio, es_fin_de_semana, es_feriado)
     payload_evolucion["anios"] = list(anios_grafico)
 
     evolucion_response = api_post("/predict/evolucion-temporal", payload_evolucion)
