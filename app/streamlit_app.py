@@ -2,7 +2,6 @@ import unicodedata
 from pathlib import Path
 
 import folium
-import joblib
 import numpy as np
 import pandas as pd
 import requests
@@ -18,6 +17,7 @@ GEOJSON_URL = (
     "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/"
     "ministerio-de-educacion/barrios/barrios.geojson"
 )
+API_URL = "http://127.0.0.1:8000"
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MESES = [
@@ -34,16 +34,7 @@ def _normalize(s: str) -> str:
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.strip().lower()
 
-
-@st.cache_resource
-def cargar_modelos():
-    reg = joblib.load(MODELS_DIR / "modelo_regresion_delitos.joblib")
-    clf = joblib.load(MODELS_DIR / "modelo_clasificacion_riesgo.joblib")
-    meta = joblib.load(MODELS_DIR / "metadata_modelos.joblib")
-    tendencia_path = MODELS_DIR / "tendencia_barrio.joblib"
-    tendencia = joblib.load(tendencia_path) if tendencia_path.exists() else None
-    return reg, clf, meta, tendencia
-
+# ─────────────────────────── DATA ───────────────────────────
 
 @st.cache_data
 def cargar_barrio_comuna() -> dict[str, str]:
@@ -71,6 +62,7 @@ def detectar_clave(geojson: dict, candidatos: tuple[str, ...]) -> str | None:
             return c
     return None
 
+# ─────────────────────────── API CALLS ───────────────────────────
 
 @st.cache_data(ttl=24 * 3600)
 def feriados_anio(anio: int) -> set[tuple[int, int]]:
@@ -84,14 +76,19 @@ def feriados_anio(anio: int) -> set[tuple[int, int]]:
         return out
     except Exception:
         return set()
+    
+def api_get(path: str):
+    r = requests.get(f"{API_URL}{path}", timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 
-reg, clf, meta, tendencia = cargar_modelos()
-features: list[str] = meta["features"]
-umbral = meta.get("umbral_clasificacion")
-anios_entrenamiento = meta.get("anios_entrenamiento", [2022, 2023])
-anios_disponibles = meta.get("anios_disponibles", anios_entrenamiento)
-modelo_es_hibrido = tendencia is not None and "anio" not in features
+def api_post(path: str, payload: dict):
+    r = requests.post(f"{API_URL}{path}", json=payload, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+# ─────────────────────────── LOAD STATIC ───────────────────────────
 
 barrio_comuna = cargar_barrio_comuna()
 geojson = cargar_geojson()
@@ -105,16 +102,13 @@ for b in barrios_geojson:
     if k in train_keys:
         barrio_geo_to_train[b] = train_keys[k]
 
+# ─────────────────────────── LOAD API METADATA ───────────────────────────
+metadata = api_get("/metadata")
 
-def factor_anio(barrio: str, anio: int, source: dict | None = None) -> float:
-    src = source if source is not None else tendencia
-    if src is None:
-        return 1.0
-    t = src.get(barrio)
-    if t is None or t.get("baseline", 0) == 0:
-        return 1.0
-    return float(np.exp(t["a"] + t["b"] * anio) / t["baseline"])
-
+umbral = metadata["umbral"]
+anios_entrenamiento = metadata["anios_entrenamiento"]
+anios_disponibles = metadata["anios_disponibles"]
+modelo_es_hibrido = metadata["modelo_es_hibrido"]
 
 # ─────────────────────────── Sidebar ───────────────────────────
 with st.sidebar:
@@ -174,9 +168,9 @@ with st.sidebar:
     )
 es_fin_de_semana = dia_semana >= 5
 
-
-def _fila(barrio: str, comuna: str, turno_: str) -> dict:
-    fila = {
+# ─────────────────────────── BUILD PAYLOAD ───────────────────────────
+def build_payload(barrio, comuna, turno_):
+    return {
         "barrio": barrio,
         "comuna": comuna,
         "dia_semana": int(dia_semana),
@@ -184,66 +178,41 @@ def _fila(barrio: str, comuna: str, turno_: str) -> dict:
         "turno": turno_,
         "es_fin_de_semana": bool(es_fin_de_semana),
         "es_feriado": bool(es_feriado),
+        "anio": int(anio),
     }
-    if "anio" in features:  # compatibilidad con v2
-        fila["anio"] = int(anio)
-    return fila
-
 
 # ─────────────────────────── Predicción por barrio ───────────────────────────
-filas = []
-barrios_validos = []
+# Usamos un barrio genérico base para cumplir con la estructura del BatchBarrioRequest
+primer_b_geo = list(barrio_geo_to_train.keys())[0]
+primer_b_train = barrio_geo_to_train[primer_b_geo]
+primer_comuna = barrio_comuna[primer_b_train]
+
+barrio_base_payload = build_payload(primer_b_train, primer_comuna, turno)
+barrios_lista_payload = []
+barrios_validos_geo = []
+
 for b_geo, b_train in barrio_geo_to_train.items():
     comuna = barrio_comuna[b_train]
-    filas.append(_fila(b_train, comuna, turno))
-    barrios_validos.append(b_geo)
+    barrios_lista_payload.append({"barrio": b_train, "comuna": comuna})
+    barrios_validos_geo.append(b_geo)
 
-X_pred = pd.DataFrame(filas)[features]
-tree_pred = np.clip(reg.predict(X_pred), 0, None)
-factors = np.array([factor_anio(f["barrio"], int(anio)) for f in filas])
-cantidad_pred = tree_pred * factors
-
-riesgo_pred = clf.predict(X_pred).astype(int)
-try:
-    prob_alto = clf.predict_proba(X_pred)[:, 1]
-except Exception:
-    prob_alto = riesgo_pred.astype(float)
-
-df_pred = pd.DataFrame({
-    "barrio_geo": barrios_validos,
-    "barrio": [f["barrio"] for f in filas],
-    "comuna": [f["comuna"] for f in filas],
-    "factor_anio": np.round(factors, 3),
-    "cantidad_predicha": np.round(cantidad_pred, 2),
-    "riesgo_int": riesgo_pred,
-    "prob_alto_riesgo": np.round(prob_alto, 3),
+# Petición Batch única
+batch_response = api_post("/predict/batch-barrio", {
+    "barrio_base": barrio_base_payload,
+    "barrios": barrios_lista_payload
 })
-df_pred["riesgo"] = np.where(df_pred["riesgo_int"] == 1, "Alto", "Bajo")
 
-# Baseline por barrio: promedio sobre los 4 turnos, mismo año (el factor se cancela
-# en el delta, pero queremos absolutos comparables para el tooltip).
-filas_baseline = []
-for f in filas:
-    for t in TURNOS:
-        f2 = dict(f)
-        f2["turno"] = t
-        filas_baseline.append(f2)
-X_base = pd.DataFrame(filas_baseline)[features]
-tree_base = np.clip(reg.predict(X_base), 0, None).reshape(len(filas), len(TURNOS))
-# Factor por barrio constante a través de los 4 turnos del mismo año
-cant_base = tree_base * factors[:, None]
-df_pred["cantidad_baseline"] = np.round(cant_base.mean(axis=1), 2)
-df_pred["delta_vs_baseline"] = np.round(
-    df_pred["cantidad_predicha"] - df_pred["cantidad_baseline"], 2
-)
+# Mapeamos los resultados de vuelta alineados con el geojson
+df_pred = pd.DataFrame(batch_response)
+df_pred["barrio_geo"] = barrios_validos_geo
+df_pred["prob_alto_riesgo"] = df_pred["probabilidad_alto_riesgo"]
+df_pred["riesgo_int"] = np.where(df_pred["riesgo"] == "Alto", 1, 0)
 
 # ─────────────────────────── UI ───────────────────────────
+
 st.title("Mapa de calor — Predicción de delitos en CABA")
-modelo_label = "HistGB Ajustado Anualmente" if modelo_es_hibrido else meta.get("modelo_regresion", "")
 st.caption(
-    f"Regresión: **{modelo_label}**  ·  "
-    f"Clasificación: **{meta.get('modelo_clasificacion')}**  ·  "
-    f"Umbral riesgo (mediana de cantidad): **{umbral}**  ·  "
+    f"Clasificación: riesgo umbral {umbral} · "
     f"Años entrenamiento: {anios_entrenamiento}"
 )
 if modelo_es_hibrido:
@@ -337,18 +306,14 @@ barrio_focus = st.selectbox(
 )
 b_train = barrio_geo_to_train[barrio_focus]
 comuna_focus = barrio_comuna[b_train]
-factor_focus = factor_anio(b_train, int(anio))
-
-filas_turno = [_fila(b_train, comuna_focus, t) for t in TURNOS]
-X_turno = pd.DataFrame(filas_turno)[features]
-cant_turno = np.clip(reg.predict(X_turno), 0, None) * factor_focus
-prob_turno = clf.predict_proba(X_turno)[:, 1] if hasattr(clf, "predict_proba") else np.zeros(len(TURNOS))
-
-df_turno = pd.DataFrame({
-    "turno": TURNOS,
-    "cantidad_predicha": np.round(cant_turno, 2),
-    "prob_alto_riesgo": np.round(prob_turno, 3),
+factor_focus = api_post("/factor-anio", {
+    "barrio": b_train,
+    "anio": int(anio)
 })
+
+payload_turno_focus = build_payload(b_train, comuna_focus, turno)
+turnos_response = api_post("/predict/turnos", payload_turno_focus)
+df_turno = pd.DataFrame(turnos_response)
 
 c1, c2 = st.columns(2)
 with c1:
@@ -359,21 +324,20 @@ with c1:
     st.bar_chart(df_turno.set_index("turno")["cantidad_predicha"])
 with c2:
     st.caption(f"Probabilidad de alto riesgo por turno — {barrio_focus}")
-    st.bar_chart(df_turno.set_index("turno")["prob_alto_riesgo"])
+    st.bar_chart(df_turno.set_index("turno")["probabilidad_alto_riesgo"])
 
 # ─────────────────────────── Tendencia temporal ───────────────────────────
 if modelo_es_hibrido:
     st.markdown("---")
     st.subheader(f"Evolución temporal estimada — {barrio_focus}")
     anios_grafico = list(range(min(anios_disponibles), int(anio) + 6))
-    fila_ref = _fila(b_train, comuna_focus, turno)
-    base_ref = float(np.clip(reg.predict(pd.DataFrame([fila_ref])[features]), 0, None)[0])
 
-    serie = pd.DataFrame({
-        "anio": anios_grafico,
-        "cantidad_estimada": [round(base_ref * factor_anio(b_train, a), 2)
-                              for a in anios_grafico],
-    }).set_index("anio")
+    payload_evolucion = build_payload(b_train, comuna_focus, turno)
+    payload_evolucion["anios"] = list(anios_grafico)
+
+    evolucion_response = api_post("/predict/evolucion-temporal", payload_evolucion)
+    serie = pd.DataFrame(evolucion_response["serie"]).set_index("anio")
+
     st.line_chart(serie)
     st.caption(
         f"Cantidad predicha para este contexto ({DIAS[dia_semana]}, {MESES[mes_num - 1]}, {turno}) "
