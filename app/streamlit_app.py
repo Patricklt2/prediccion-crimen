@@ -18,7 +18,7 @@ GEOJSON_URL = (
     "https://cdn.buenosaires.gob.ar/datosabiertos/datasets/"
     "ministerio-de-educacion/barrios/barrios.geojson"
 )
-API_URL = "https://prediccion-crimen.onrender.com"
+API_URL = "https://prediccion-crimen-1.onrender.com"
 
 DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MESES = [
