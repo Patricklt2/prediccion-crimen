@@ -18,6 +18,16 @@ app = FastAPI(
     version="1.0"
 )
 
+# permitir acceso desde streamlit
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://prediccion-crimen-wh9gemhxpxjhsykgfcgwt7.streamlit.app"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/health")
 def health():
