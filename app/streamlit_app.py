@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
+import altair as alt
 
 st.set_page_config(page_title="Seguridad CABA", layout="wide")
 
@@ -321,10 +322,26 @@ with c1:
         f"Cantidad predicha por turno — {barrio_focus} (Comuna {comuna_focus}) "
         f"· factor año {anio}: {factor_focus:.2f}"
     )
-    st.bar_chart(df_turno.set_index("turno")["cantidad_predicha"])
+    chart_cant = (
+        alt.Chart(df_turno)
+        .mark_bar()
+        .encode(
+            x=alt.X("turno:N", sort=TURNOS, title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("cantidad_predicha:Q", title=None),
+        )
+    )
+    st.altair_chart(chart_cant, use_container_width=True)
 with c2:
     st.caption(f"Probabilidad de alto riesgo por turno — {barrio_focus}")
-    st.bar_chart(df_turno.set_index("turno")["probabilidad_alto_riesgo"])
+    chart_prob = (
+        alt.Chart(df_turno)
+        .mark_bar()
+        .encode(
+            x=alt.X("turno:N", sort=TURNOS, title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("probabilidad_alto_riesgo:Q", title=None),
+        )
+    )
+    st.altair_chart(chart_prob, use_container_width=True)
 
 # ─────────────────────────── Tendencia temporal ───────────────────────────
 if modelo_es_hibrido:
@@ -336,9 +353,26 @@ if modelo_es_hibrido:
     payload_evolucion["anios"] = list(anios_grafico)
 
     evolucion_response = api_post("/predict/evolucion-temporal", payload_evolucion)
-    serie = pd.DataFrame(evolucion_response["serie"]).set_index("anio")
+    serie = pd.DataFrame(evolucion_response["serie"])
+    serie.index = serie.index.astype(str)
 
-    st.line_chart(serie)
+    chart = (
+        alt.Chart(serie)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X(
+                "anio:O",
+                title=None,
+                axis=alt.Axis(labelAngle=0),
+            ),
+            y=alt.Y(
+                "cantidad_estimada:Q",
+                title=None,
+            ),
+        )
+    )
+
+    st.altair_chart(chart, use_container_width=True)
     st.caption(
         f"Cantidad predicha para este contexto ({DIAS[dia_semana]}, {MESES[mes_num - 1]}, {turno}) "
         f"a lo largo de los años, aplicando el factor de tendencia del barrio."
