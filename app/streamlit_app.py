@@ -288,7 +288,11 @@ with col_side:
                          "cantidad_predicha": "Cantidad", "riesgo": "Riesgo"})
         .reset_index(drop=True)
     )
-    st.dataframe(top, use_container_width=True, hide_index=True)
+    st.dataframe(
+        top,
+        use_container_width=True,
+        hide_index=True
+    )
 
     st.subheader("Resumen")
     st.metric("Barrios cubiertos", f"{len(df_pred)} / {len(barrios_geojson)}")
