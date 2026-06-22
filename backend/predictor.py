@@ -1,9 +1,9 @@
 import numpy as np
 import pandas as pd
 
-from backend.model_loader import reg, clf, features, tendencia, meta
-from backend.utils import factor_anio
-from backend.schemas import MetadataResponse
+from model_loader import reg, clf, features, tendencia, meta
+from utils import factor_anio
+from schemas import MetadataResponse
 
 
 TURNOS = ["Madrugada", "Mañana", "Tarde", "Noche"]

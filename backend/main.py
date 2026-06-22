@@ -1,11 +1,11 @@
 from fastapi import FastAPI
-from backend.schemas import (
+from schemas import (
     PredictRequest, 
     BatchBarrioRequest,
     FactorAnioRequest,
     EvolucionTemporalRequest
 )
-from backend.predictor import (
+from predictor import (
     predict_batch_barrio,
     predict_turnos,
     metadata,
