@@ -183,7 +183,6 @@ def build_payload(barrio, comuna, turno_):
     }
 
 # ─────────────────────────── Predicción por barrio ───────────────────────────
-# Usamos un barrio genérico base para cumplir con la estructura del BatchBarrioRequest
 primer_b_geo = list(barrio_geo_to_train.keys())[0]
 primer_b_train = barrio_geo_to_train[primer_b_geo]
 primer_comuna = barrio_comuna[primer_b_train]
