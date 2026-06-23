@@ -48,7 +48,8 @@ for b in barrios_geojson:
         barrio_geo_to_train[b] = train_keys[k]
 
 # ─────────────────────────── LOAD API METADATA ───────────────────────────
-metadata = api_get("/metadata")
+with st.spinner("Conectando con la API (puede tardar ~30s si estaba dormida)…"):
+    metadata = api_get("/metadata")
 
 umbral = metadata["umbral"]
 anios_entrenamiento = metadata["anios_entrenamiento"]
